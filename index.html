@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Strawberry Cake — Pixel Game</title>
+  <style>
+    :root{
+      --bg: #f7f1f8;
+      --ink:#1b1b1b;
+      --accent:#ff4f7b;
+      --accent-dark:#cc3f63;
+      --cream:#ffe6f0;
+      --leaf:#5abf6b;
+      --shadow: #e1d6de;
+    }
+    html, body {
+      height: 100%;
+    }
+    body {
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, var(--bg), #fff);
+      color: var(--ink);
+      font: 16px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .wrap{
+      display:flex;flex-direction:column;gap:.75rem;align-items:center;
+      padding: 1rem 1.25rem 1.5rem; border-radius: 16px; background:#fff; box-shadow: 0 10px 30px rgba(0,0,0,.07), inset 0 0 0 1px var(--shadow);
+    }
+    h1{font-size:1.1rem;margin:.25rem 0 .25rem 0;letter-spacing:.02em}
+    .subtitle{font-size:.85rem;opacity:.8;margin-top:-.25rem}
+    canvas{ image-rendering: pixelated; image-rendering: crisp-edges; width:min(92vw, 640px); height:auto; border-radius:12px; box-shadow: 0 6px 16px rgba(0,0,0,.08), inset 0 0 0 2px var(--shadow);
+      background: #fceaf1;
+    }
+    .row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;justify-content:center}
+    button{cursor:pointer;border:none;background:var(--accent);color:#fff;font-weight:600;padding:.55rem .9rem;border-radius:12px;box-shadow:0 2px 0 var(--accent-dark);transition: transform .05s}
+    button:active{transform: translateY(2px)}
+    .ghost{background:#eee;color:#222;box-shadow:0 2px 0 #cfcfcf}
+    .hint{font-size:.8rem;opacity:.85}
+    kbd{background:#f2f2f4;border:1px solid #ddd;border-bottom-width:2px;border-radius:6px;padding:.1rem .35rem;font-weight:700}
+    .credits{font-size:.75rem; opacity:.7}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Strawberry Cake — Tiny Pixel Jam</h1>
+    <div class="subtitle">Collect berries, avoid wasps, and bake a perfect cake in 90 seconds.</div>
+    <canvas id="game" width="192" height="144" aria-label="Strawberry Cake Game" role="img"></canvas>
+    <div class="row">
+      <button id="btnStart">▶︎ Start</button>
+      <button id="btnPause" class="ghost">⏸ Pause</button>
+      <button id="btnRestart" class="ghost">↻ Restart</button>
+    </div>
+    <div class="hint">Controls: <kbd>←</kbd> <kbd>→</kbd> move, <kbd>↑</kbd> dash, or <kbd>A</kbd>/<kbd>D</kbd> & <kbd>W</kbd>. Collect <strong>12 strawberries</strong> to bake the cake!</div>
+    <div class="credits">Vanilla JS • Single file • Pixel canvas 192×144, scaled with nearest-neighbor</div>
+  </div>
+
+<script>
+(() => {
+  // --- Utility: RNG ---
+  const rand = (min, max) => Math.random() * (max - min) + min;
+  const rint = (min, max) => (Math.random() * (max - min + 1) + min) | 0;
+
+  // --- Canvas Setup (low-res virtual, upscaled by CSS) ---
+  const c = document.getElementById('game');
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // --- Game Constants ---
+  const G = {
+    W: c.width, H: c.height,
+    GRAV: 0.12,
+    FRICTION: 0.85,
+    SPEED: 0.6,
+    DASH: 2.0,
+    MAX_VX: 1.5,
+    TIME_LIMIT: 90, // seconds
+    TARGET: 12, // strawberries needed
+  };
+
+  // --- Input ---
+  const keys = new Set();
+  addEventListener('keydown', e => { keys.add(e.key.toLowerCase()); if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault(); });
+  addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+  // --- Pixel Palette ---
+  const COL = {
+    bg: '#fceaf1',
+    ground: '#f7d6e5',
+    wall: '#f2bfd2',
+    dark: '#832742',
+    ink: '#2b1220',
+    white: '#ffffff',
+    cream: '#ffe6ef',
+    red: '#ff4f7b',
+    red2: '#ff6d90',
+    seed: '#fff7b8',
+    leaf: '#4fc06b',
+    shadow: '#e2a9bf',
+    bee: '#ffc107',
+    bee2: '#ff9800'
+  };
+
+  // --- Tiny Pixel Font (3x5) ---
+  const drawChar = (x, y, ch, col=COL.ink) => {
+    const map = {
+      '0':'111101101101111','1':'010110010010111','2':'111001111100111','3':'111001111001111','4':'101101111001001',
+      '5':'111100111001111','6':'111100111101111','7':'111001001001001','8':'111101111101111','9':'111101111001111',
+      'A':'111101111101101','B':'110101110101110','C':'111100100100111','D':'110101101101110','E':'111100110100111','F':'111100110100100',
+      'G':'111100101101111','H':'101101111101101','I':'111010010010111','J':'001001001101111','K':'101101110101101','L':'100100100100111',
+      'M':'101111101101101','N':'101111111111101','O':'111101101101111','P':'111101111100100','Q':'111101101111011','R':'111101111110101',
+      'S':'111100111001111','T':'111010010010010','U':'101101101101111','V':'101101101101010','W':'101101111111101','X':'101101010101101',
+      'Y':'101101010010010','Z':'111001010100111',
+      ':':'000010000010000','!':'010010010000010',' ':'000000000000000','-':'000000111000000','.':'000000000000010'
+    };
+    const pat = map[ch] || map[' '];
+    let i=0; for(let yy=0; yy<5; yy++) for(let xx=0; xx<3; xx++, i++) if(pat[i]==='1') {
+      ctx.fillStyle = col; ctx.fillRect(x+xx, y+yy, 1, 1);
+    }
+  };
+  const drawText = (x, y, s, col=COL.ink) => {
+    s = (s+"").toUpperCase();
+    for (let i=0;i<s.length;i++){ drawChar(x+i*4, y, s[i], col); }
+  };
+
+  // --- Sprite helpers (12x12 px) ---
+  function strawberry(x, y){
+    // Body
+    ctx.fillStyle = COL.red; ctx.fillRect(x+3, y+3, 6, 6);
+    ctx.fillStyle = COL.red2; ctx.fillRect(x+4, y+3, 3, 2);
+    // Seeds
+    ctx.fillStyle = COL.seed; [ [4,5],[6,4],[7,6],[5,7] ].forEach(([sx,sy])=>ctx.fillRect(x+sx,y+sy,1,1));
+    // Leaf
+    ctx.fillStyle = COL.leaf; ctx.fillRect(x+5, y+2,2,1); ctx.fillRect(x+4, y+3,1,1); ctx.fillRect(x+7, y+3,1,1);
+    // Shine
+    ctx.fillStyle = COL.white; ctx.fillRect(x+3, y+4,1,1);
+    // Outline
+    ctx.strokeStyle = COL.dark; ctx.lineWidth = 1; ctx.strokeRect(x+3+0.5, y+3+0.5, 6, 6);
+  }
+
+  function playerSprite(x,y,flip=false){
+    // a tiny chef (12x12)
+    ctx.fillStyle = COL.white; ctx.fillRect(x+3,y+1,6,5); // hat
+    ctx.fillStyle = COL.cream; ctx.fillRect(x+4,y+6,4,4); // face
+    ctx.fillStyle = COL.dark; ctx.fillRect(x+5,y+7,1,1); ctx.fillRect(x+7,y+7,1,1); // eyes
+    ctx.fillStyle = COL.red; ctx.fillRect(x+4,y+10,4,1); // scarf
+    // body
+    ctx.fillStyle = COL.white; ctx.fillRect(x+3,y+11,6,1);
+    // simple outline
+    ctx.strokeStyle = COL.dark; ctx.lineWidth = 1; ctx.strokeRect(x+3+0.5,y+1+0.5,6,11);
+  }
+
+  function wasp(x,y){
+    // simple wasp (12x8)
+    ctx.fillStyle = COL.bee; ctx.fillRect(x+2,y+2,8,4);
+    ctx.fillStyle = COL.bee2; ctx.fillRect(x+5,y+2,2,4);
+    ctx.fillStyle = COL.dark; ctx.fillRect(x+1,y+3,1,2); // stinger
+    ctx.fillStyle = COL.white; ctx.fillRect(x+3,y,3,2); // wings
+    ctx.fillStyle = COL.white; ctx.fillRect(x+7,y,3,2);
+    ctx.strokeStyle = COL.dark; ctx.lineWidth=1; ctx.strokeRect(x+2+0.5,y+2+0.5,8,4);
+  }
+
+  function cake(x, y, stage = 3, size = 1) {
+    // size=1: normal, size=2: big (for win screen)
+    const baseW = 8 * size, baseH = 3 * size;
+    const creamH = 2 * size;
+    const baseX = x + 2 * size, baseY = y + 8 * size;
+    const creamY = y + 6 * size;
+    // Base
+    if (stage >= 1) {
+      ctx.fillStyle = '#f7c59f';
+      ctx.fillRect(baseX, baseY, baseW, baseH);
+    }
+    // Cream
+    if (stage >= 2) {
+      ctx.fillStyle = COL.cream;
+      ctx.fillRect(baseX, creamY, baseW, creamH);
+    }
+    // Strawberries (always 12x12, spaced wider if big)
+    if (stage >= 3) {
+      const berryCount = 3;
+      const berrySpacing = size === 1 ? 3 : 7;
+      const berryW = 12;
+      const totalBerriesW = berryCount * berryW + (berryCount - 1) * (berrySpacing - berryW);
+      const berriesStartX = baseX + (baseW - totalBerriesW) / 2;
+      for (let i = 0; i < berryCount; i++) {
+        strawberry(berriesStartX + i * berrySpacing, y + 3 * size);
+      }
+    }
+    // Outline
+    ctx.strokeStyle = COL.dark;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(baseX + 0.5, creamY + 0.5, baseW, baseH + creamH);
+  }
+
+  // --- Level (bounds + soft tiles) ---
+  const bounds = {x:8,y:12,w:G.W-16,h:G.H-20};
+
+  // --- Entities ---
+  const player = {x: G.W/2, y: bounds.y+bounds.h-14, vx:0, vy:0, w:12, h:12, dir:1, dashCD:0};
+  let strawberries = [];
+  let wasps = [];
+  let particles = [];
+
+  function spawnStrawberry(){
+    const x = rint(bounds.x+4, bounds.x+bounds.w-16);
+    const y = rint(bounds.y+4, bounds.y+bounds.h-24);
+    strawberries.push({x,y,w:12,h:12, t:0});
+  }
+  function spawnWasp(){
+    const x = rint(bounds.x+8, bounds.x+bounds.w-20);
+    const y = rint(bounds.y+8, bounds.y+40);
+    const s = rand(0.3, 0.7) * (Math.random()<0.5?-1:1);
+    wasps.push({x,y,w:12,h:8,vx:s,dir:Math.sign(s)||1});
+  }
+  function pop(x,y,col){
+    for(let i=0;i<12;i++) particles.push({x,y,vx:rand(-1,1),vy:rand(-1,0),life: rint(12,20),col});
+  }
+
+  // --- Game State ---
+  let state = 'menu'; // menu | play | win | lose
+  let tStart = 0; // ms
+  let timeLeft = G.TIME_LIMIT;
+  let score = 0;
+
+  // --- Simple SFX using WebAudio ---
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const actx = new AudioCtx();
+  let muted = false;
+  function beep(freq=600, dur=0.07, type='square', vol=0.03){
+    if(muted) return;
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, actx.currentTime);
+    g.gain.value = vol; o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + dur);
+  }
+
+  // Mario-style win sound: bibibibip bip bippp
+  function playWinSound() {
+    if (muted) return;
+    const notes = [
+      {f:880, d:60}, // bi
+      {f:1040, d:60}, // bi
+      {f:1320, d:60}, // bi
+      {f:1560, d:60}, // bip
+      {f:880, d:80}, // bip
+      {f:660, d:220}, // bippp
+    ];
+    let t = 0;
+    for (const n of notes) {
+      setTimeout(() => beep(n.f, n.d/1000, 'square', 0.06), t);
+      t += n.d;
+    }
+  }
+
+  // --- Collisions ---
+  const hit = (a,b)=> a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  // --- Update/Draw ---
+  let last=0; function loop(ms){
+    const dt = Math.min(32, ms-last); last = ms;
+    requestAnimationFrame(loop);
+    ctx.clearRect(0,0,G.W,G.H);
+
+    // background & frame
+    ctx.fillStyle = COL.bg; ctx.fillRect(0,0,G.W,G.H);
+    // frame
+    ctx.fillStyle = COL.ground; ctx.fillRect(bounds.x-4,bounds.y-4,bounds.w+8,bounds.h+8);
+    ctx.strokeStyle = COL.wall; ctx.lineWidth=4; ctx.strokeRect(bounds.x-2.5,bounds.y-2.5,bounds.w+5,bounds.h+5);
+
+    if(state==='menu'){
+      // Helper to center text
+      const centerText = (y, text, color=COL.ink) => {
+        const w = text.length * 4;
+        drawText((G.W - w) / 2, y, text, color);
+      };
+      // Title
+      centerText(20, 'STRAWBERRY', COL.ink);
+      centerText(28, 'CAKE', COL.ink);
+      // Larger cake, centered
+      const cakeSize = 2.5;
+      const cakeW = 8 * cakeSize;
+      const cakeX = (G.W - cakeW) / 2 - 2 * cakeSize;
+      const cakeY = 40;
+      cake(cakeX, cakeY, 3, cakeSize);
+      // Press Start
+      centerText(92, 'PRESS START', COL.dark);
+      centerText(104, 'ARROWS + W TO DASH', COL.dark);
+      return;
+    }
+
+    if(state==='play'){
+      // time
+      const nowSec = (performance.now() - tStart)/1000;
+      timeLeft = Math.max(0, G.TIME_LIMIT - nowSec);
+      if(timeLeft<=0){ state = score>=G.TARGET ? 'win' : 'lose'; beep(220,0.2,'sawtooth',0.05); }
+
+      // input
+      let ax = 0;
+      if(keys.has('arrowleft') || keys.has('a')) ax -= G.SPEED;
+      if(keys.has('arrowright') || keys.has('d')) ax += G.SPEED;
+      player.vx = (player.vx + ax); player.vx *= G.FRICTION; player.vx = Math.max(-G.MAX_VX, Math.min(G.MAX_VX, player.vx));
+      player.x += player.vx; player.dir = player.vx>=0?1:-1;
+      // dash upwards (cute hop)
+      if((keys.has('arrowup') || keys.has('w')) && player.dashCD<=0){ player.vy = -G.DASH; player.dashCD = 22; beep(880,0.06,'triangle',0.04); }
+      player.dashCD -= 1;
+
+      // gravity-ish (keeps player within arena with bouncy floor)
+      player.vy += G.GRAV; player.y += player.vy;
+      // bounds
+      if(player.x < bounds.x) { player.x = bounds.x; player.vx *= -0.2; }
+      if(player.x+player.w > bounds.x+bounds.w){ player.x = bounds.x+bounds.w-player.w; player.vx *= -0.2; }
+      if(player.y < bounds.y){ player.y = bounds.y; player.vy *= -0.2; }
+      if(player.y+player.h > bounds.y+bounds.h){ player.y = bounds.y+bounds.h-player.h; player.vy *= -0.2; }
+
+      // strawberries spawn
+      if(strawberries.length < 5 && Math.random()<0.05) spawnStrawberry();
+
+      // wasps spawn
+      if(wasps.length < 3 && Math.random()<0.02) spawnWasp();
+
+      // update wasps
+      for(const w of wasps){
+        w.x += w.vx;
+        if(w.x < bounds.x+6 || w.x+w.w > bounds.x+bounds.w-6) w.vx *= -1;
+        // collide with player
+        if(hit(player,w)){
+          pop(player.x+6, player.y+6, COL.bee);
+          beep(120,0.08,'square',0.05);
+          // penalty: knock back + small time loss
+          player.vx += -2*w.vx; player.vy = -1.5;
+          tStart += 1200; // effectively lose 1.2s
+        }
+      }
+
+      // collect strawberries
+      for(let i=strawberries.length-1;i>=0;i--){
+        const s = strawberries[i]; s.t += dt;
+        if(hit(player,s)){
+          strawberries.splice(i,1); score++; pop(s.x+6,s.y+6, COL.red); beep(660,0.06,'square',0.04);
+          if(score>=G.TARGET){ state='win'; playWinSound(); }
+        }
+      }
+
+      // particles
+      for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.03; p.life--; if(p.life<=0) particles.splice(i,1); }
+
+      // DRAW ENTITIES
+      // strawberries
+      for(const s of strawberries){ strawberry(s.x, s.y); }
+      // wasps
+      for(const w of wasps){ wasp(w.x, w.y); }
+      // player
+      playerSprite(player.x, player.y, player.dir<0);
+
+      // particles draw
+      for(const p of particles){ ctx.fillStyle = p.col; ctx.fillRect(p.x|0, p.y|0, 2, 2); }
+
+      // HUD
+      drawText(8, 6, `BERRIES:${score}/${G.TARGET}`, COL.ink);
+      drawText(G.W-60, 6, `TIME:${Math.ceil(timeLeft)}`, timeLeft<15?COL.red:COL.ink);
+      // tiny cake progress
+      cake(G.W-24, 12, Math.min(3, 1 + (score>4) + (score>8)));
+
+      return;
+    }
+
+    if(state==='win'){
+      ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fillRect(0,0,G.W,G.H);
+      // Helper to center text
+      const centerText = (y, text, color=COL.ink) => {
+        const w = text.length * 4;
+        drawText((G.W - w) / 2, y, text, color);
+      };
+      // Title
+      centerText(24, 'YOU BAKED', COL.ink);
+      centerText(34, 'A CAKE!', COL.ink);
+      // Cake size and position
+      const cakeW = 8 * 3 + 4 * 3; // base width + left/right offset for size=3
+      const cakeH = 3 * 3 + 2 * 3 + 6 * 3; // base + cream + top offset
+      const cakeX = (G.W - (8*3)) / 2 - 2 * 3; // align with cake() math
+      const cakeY = 48;
+      cake(cakeX, cakeY, 3, 3);
+      // Score
+      centerText(cakeY + 3*8 + 18, `BERRIES: ${score}`, COL.dark);
+      // Instruction
+      centerText(cakeY + 3*8 + 30, 'PRESS RESTART', COL.dark);
+      return;
+    }
+
+    if(state==='lose'){
+      ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fillRect(0,0,G.W,G.H);
+      drawText(66, 36, 'OUT OF TIME', COL.ink);
+      drawText(46, 48, 'RUINED THE CAKE…', COL.dark);
+      drawText(42, 108, 'PRESS RESTART', COL.dark);
+      return;
+    }
+  }
+
+  // --- Controls (UI Buttons) ---
+  function startGame(){
+    // reset
+    strawberries.length = 0; wasps.length=0; particles.length=0;
+    player.x=G.W/2-6; player.y=bounds.y+bounds.h-14; player.vx=player.vy=0; player.dashCD=0;
+    score = 0; timeLeft = G.TIME_LIMIT; tStart = performance.now(); state='play';
+    // warm spawns
+    for(let i=0;i<4;i++) spawnStrawberry();
+    for(let i=0;i<2;i++) spawnWasp();
+  }
+  function pauseGame(){ if(state==='play'){ state='menu'; } else if(state==='menu'){ tStart = performance.now() - (G.TIME_LIMIT - timeLeft)*1000; state='play'; } }
+  function restartGame(){ state='menu'; score=0; timeLeft=G.TIME_LIMIT; }
+
+  document.getElementById('btnStart').onclick = () => { actx.resume(); startGame(); };
+  document.getElementById('btnPause').onclick = () => { actx.resume(); pauseGame(); };
+  document.getElementById('btnRestart').onclick = () => { actx.resume(); restartGame(); };
+
+  // Start loop
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
